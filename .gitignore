@@ -1,0 +1,11 @@
+env
+venv
+.env
+*.key
+*.env
+*.pyc
+*.7z
+*.rar
+*.zip
+AutoCommit.py
+
