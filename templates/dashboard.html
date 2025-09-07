@@ -1,191 +1,10 @@
-import os
-import json
-import random
-from flask import Flask, request, redirect, session, url_for, render_template_string
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+{% extends "base.html" %}
 
-# --- Configuración de la aplicación ---
-app = Flask(__name__)
-app.secret_key = os.urandom(24)  # Clave secreta para la sesión de Flask
+{% block title %}Dashboard{% endblock %}
 
-# Variables de entorno para las credenciales de Spotify
-CLIENT_ID =os.environ.get('SPOTIPY_CLIENT_ID')
-CLIENT_SECRET = os.environ.get('SPOTIPY_CLIENT_SECRET')
-REDIRECT_URI =os.environ.get('SPOTIPY_REDIRECT_URI','http://127.0.0.1:8000/callback')
-SCOPES = 'user-top-read user-read-private user-read-email playlist-modify-private user-library-read playlist-read-private'
-sp_oauth = SpotifyOAuth (  
-    client_id=CLIENT_ID,
-    client_secret=CLIENT_SECRET,
-    redirect_uri=REDIRECT_URI,
-    scope=SCOPES,
-    cache_path=None
-    )
-# Almacenamiento temporal en memoria para los datos de sesión
-session_data = {}
-song_tags = {}
-
-# --- Funciones auxiliares ---
-
-def get_spotify_oauth():
-    """Configura el objeto SpotifyOAuth."""
-    return SpotifyOAuth(
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        redirect_uri=REDIRECT_URI,
-        scope=SCOPES,
-        cache_path=None
-    )
-
-def get_spotify_client():
-    """Obtiene un cliente de Spotify autenticado para el usuario actual."""
-    token_info = session_data.get(session.get('user_id'))
-    if not token_info:
-        return None
-
-    auth_manager = get_spotify_oauth()
-    # Spotipy >=2.22: get_access_token devuelve directamente dict con 'access_token'
-    sp = spotipy.Spotify(auth_manager=auth_manager)
-    return sp
-
-# --- Rutas de la aplicación ---
-@app.route('/')
-def index():
-    if 'user_id' in session and session.get('user_id') in session_data:
-        return redirect(url_for('dashboard'))
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/login')
-def login():
-    auth_url = sp_oauth.get_authorize_url()
-    return redirect(auth_url)
-
-
-@app.route('/callback')
-def callback():
-    # La URL completa que Spotify redirige, incluyendo ?code=
-    code = request.args.get('code')
-    if not code:
-        return "No se recibió código de autenticación. Revisa que redirect_uri coincida.", 400
-
-    # Intercambia el código por token
-    token_info = sp_oauth.get_access_token(code, as_dict=True)
-    access_token = token_info['access_token']
-
-    sp = spotipy.Spotify(auth=access_token)
-    user_id = sp.me()['id']
-    session['user_id'] = user_id
-    session_data[user_id] = token_info
-
-    return redirect(url_for('dashboard'))
-
-@app.route('/logout')
-def logout():
-    session.pop('user_id', None)
-    return redirect(url_for('index'))
-
-@app.route('/dashboard')
-def dashboard():
-    sp = get_spotify_client()
-    if not sp:
-        return redirect(url_for('index'))
-
-    try:
-        top_artists = sp.current_user_top_artists(limit=10, time_range='medium_term')['items']
-        genres = [genre for artist in top_artists for genre in artist['genres']]
-        genre_counts = {}
-        for genre in genres:
-            genre_counts[genre.capitalize()] = genre_counts.get(genre.capitalize(), 0) + 1
-        labels = list(genre_counts.keys())
-        data = list(genre_counts.values())
-    except spotipy.SpotifyException as e:
-        print(f"Error al obtener datos de Spotify: {e}")
-        top_artists, labels, data = [], [], []
-
-    user_tags = song_tags.get(session.get('user_id'), {})
-
-    return render_template_string(HTML_TEMPLATE, 
-                                 page_title="Dashboard",
-                                 top_artists=top_artists,
-                                 genres_labels=labels,
-                                 genres_data=data,
-                                 user_tags=user_tags)
-
-@app.route('/playlist', methods=['GET'])
-def generate_playlist():
-    sp = get_spotify_client()
-    if not sp:
-        return redirect(url_for('index'))
-
-    mood_param = request.args.get('mood', 'energetic').lower()
-    moods = {
-        'calm': {'target_valence': 0.2, 'target_energy': 0.2, 'target_tempo': 80},
-        'energetic': {'target_valence': 0.8, 'target_energy': 0.9, 'target_tempo': 150},
-        'happy': {'target_valence': 0.9, 'target_energy': 0.7},
-        'sad': {'target_valence': 0.1, 'target_energy': 0.2},
-        'melancholic': {'target_valence': 0.3, 'target_energy': 0.3},
-        'going to conquer the world': {'target_valence': 0.8, 'target_energy': 0.9, 'target_danceability': 0.8},
-        'random': {'target_valence': random.uniform(0, 1), 'target_energy': random.uniform(0, 1)}
-    }
-    
-    target_features = moods.get(mood_param, moods['random'])
-
-    try:
-        top_tracks = sp.current_user_top_tracks(limit=5, time_range='medium_term')['items']
-        seed_tracks = [track['id'] for track in top_tracks]
-        recommendations = sp.recommendations(seed_tracks=seed_tracks, limit=20, **target_features)['tracks']
-    except spotipy.SpotifyException as e:
-        print(f"Error al generar playlist: {e}")
-        recommendations = []
-
-    return render_template_string(HTML_TEMPLATE, 
-                                 page_title=f"Playlist {mood_param.capitalize()}",
-                                 mood_playlist=recommendations,
-                                 selected_mood=mood_param)
-
-@app.route('/search', methods=['POST'])
-def search():
-    sp = get_spotify_client()
-    if not sp:
-        return redirect(url_for('index'))
-
-    query = request.form.get('query')
-    search_type = request.form.get('type')
-    try:
-        results = sp.search(q=query, type=search_type, limit=15)
-        if search_type == 'artist':
-            artists = results['artists']['items']
-            tracks = []
-        else:
-            tracks = results['tracks']['items']
-            artists = []
-    except spotipy.SpotifyException as e:
-        print(f"Error en la búsqueda: {e}")
-        artists, tracks = [], []
-
-    return render_template_string(HTML_TEMPLATE,
-                                 page_title="Búsqueda",
-                                 search_artists=artists,
-                                 search_tracks=tracks,
-                                 search_query=query)
-
-@app.route('/tag_song', methods=['POST'])
-def tag_song():
-    user_id = session.get('user_id')
-    song_id = request.form.get('song_id')
-    song_name = request.form.get('song_name')
-    tag = request.form.get('tag')
-
-    if user_id and song_id and tag:
-        if user_id not in song_tags:
-            song_tags[user_id] = {}
-        song_tags[user_id][song_id] = {'name': song_name, 'tag': tag}
-        return redirect(url_for('dashboard'))
-    
-    return "Error al etiquetar la canción.", 400
-
-# --- Código HTML de la UI con TailwindCSS (dentro de una string multilínea) ---
-HTML_TEMPLATE = """
+{% block content %}
+<h2>Tus Hábitos Musicales 🎶</h2>
+<!-- Tu HTML del dashboard solo aquí -->
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -253,7 +72,7 @@ HTML_TEMPLATE = """
                     <a href="{{ url_for('generate_playlist', mood='melancholic') }}" class="btn-primary">Melancólica</a>
                     <a href="{{ url_for('generate_playlist', mood='going to conquer the world') }}" class="btn-primary">Conquistar el mundo</a>
                 </div>
-                
+
                 {% if mood_playlist %}
                     <h3 class="text-lg font-semibold mb-2">Playlist {{ selected_mood.capitalize() }}</h3>
                     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -305,7 +124,7 @@ HTML_TEMPLATE = """
                     </div>
                 {% endif %}
             </div>
-            
+
             <div class="container-section">
                 <h2 class="text-2xl font-semibold mb-4 text-green-700">Tus Canciones Etiquetadas 🏷️</h2>
                 {% if user_tags %}
@@ -330,7 +149,7 @@ HTML_TEMPLATE = """
             const ctx = document.getElementById('genreChart');
             const genreLabels = JSON.parse('{{ genres_labels | tojson }}');
             const genreData = JSON.parse('{{ genres_data | tojson }}');
-            
+
             new Chart(ctx, {
                 type: 'doughnut',
                 data: {
@@ -359,12 +178,6 @@ HTML_TEMPLATE = """
     </script>
 </body>
 </html>
-"""
 
+{% endblock %}
 
-if __name__ == '__main__':
-    if not CLIENT_ID or not CLIENT_SECRET or not REDIRECT_URI:
-        print("Error: Las variables de entorno SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET y SPOTIPY_REDIRECT_URI no están configuradas.")
-        print("Asegúrate de exportarlas o configurarlas en tu sistema antes de correr la aplicación.")
-    else:
-        app.run(debug=True, host='0.0.0.0' ,port=8000)
