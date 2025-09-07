@@ -367,4 +367,4 @@ if __name__ == '__main__':
         print("Error: Las variables de entorno SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET y SPOTIPY_REDIRECT_URI no están configuradas.")
         print("Asegúrate de exportarlas o configurarlas en tu sistema antes de correr la aplicación.")
     else:
-        app.run(debug=True, host='0.0.0.0' ,port=8000)
+        app.run( host='0.0.0.0' ,port=8000)
